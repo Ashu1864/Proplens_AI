@@ -1,0 +1,16 @@
+logging:
+  level: INFO
+  format: "[%(asctime)s] %(levelname)s - %(message)s"
+  output:
+    - type: console
+    - type: file
+      path: logs/prefect.log
+      level: INFO
+
+storage:
+  type: local
+
+cloud:
+  enabled: false
+
+# Additional configuration as needed

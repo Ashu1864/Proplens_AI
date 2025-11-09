@@ -1,0 +1,10 @@
+prefect
+psycopg2-binary
+SQLAlchemy
+camelot-py[cv]
+pdfplumber
+chromadb
+loguru
+Django
+pytest
+pytest-django
