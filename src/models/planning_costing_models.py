@@ -14,7 +14,7 @@ class CostItem(Base):
     total_price = Column(Float)
 
 def get_engine():
-    return create_engine('postgresql://yourusername:yourpassword@localhost/data_engineer')
+    return create_engine('postgresql://postgres:Shrutika2210@localhost/data_engineer')
 
 def create_tables():
     engine = get_engine()

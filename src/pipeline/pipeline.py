@@ -1,153 +1,108 @@
 from prefect import flow, task
-from loguru import logger
-import camelot
-import pdfplumber
-import chromadb
 import psycopg2
-from psycopg2.extras import execute_values
 
-from src.models.planning_costing_models import create_tables, get_session, CostItem
-from src.models.planning_costing_transform_load import transform_table_to_cost_items, load_cost_items_to_db
+from src.extraction.schedule_extractor import extract_project_tasks
+from src.extraction.planning_costing_extractor import extract_cost_items
+from src.extraction.regulatory_extractor import extract_regulatory_rules
+from src.extraction.semantic_extractor import semantic_embed_pdf
+import chromadb
+import logging
 
-# Paths to documents
-PDF_SCHEDULE_PATH = "../data/Project-schedule-document.pdf"
-PDF_REGULATORY_PATH = "../data/URA-Circular-on-GFA-area-definition.pdf"
-PDF_FLOWCHART_PATH = "../data/construction-approvals-long-process-chart.pdf"
-PDF_COSTING_PATH = "../data/Construction-planning-and-costing.pdf"
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
+PDF_SCHEDULE_PATH = "data/Project-schedule-document.pdf"
+PDF_COSTING_PATH = "data/Construction-planning-and-costing.pdf"
+PDF_REGULATORY_PATH = "data/URA-Circular-on-GFA-area-definition.pdf"
+PDF_FLOWCHART_PATH = "data/construction-approvals-long-process-chart.pdf"
 
-# PostgreSQL connection details for direct queries from schedule and regulatory extraction
-POSTGRES_CONN_INFO = {
-    "host": "localhost",
-    "database": "data_engineer",
-    "user": "yourusername",
-    "password": "yourpassword"
-}
-
-@task
-def extract_schedule_text_task(pdf_path):
-    logger.info(f"Extracting text from schedule PDF {pdf_path}")
-    extracted_data = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                extracted_data.append(text)
-    return extracted_data
+DB_CONFIG = dict(
+    host="localhost",
+    database="data_engineer",
+    user="postgres",
+    password="Shrutika2210"
+)
 
 @task
-def load_schedule_text_task(text_pages):
-    logger.info("Loading schedule text into PostgreSQL")
-    conn = psycopg2.connect(**POSTGRES_CONN_INFO)
+def extract_and_load_schedule_task():
+    tasks = extract_project_tasks(PDF_SCHEDULE_PATH)
+    conn = psycopg2.connect(**DB_CONFIG)
     cur = conn.cursor()
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS project_schedule_text (
-            id SERIAL PRIMARY KEY,
-            page_text TEXT
+        CREATE TABLE IF NOT EXISTS project_tasks (
+            task_id INTEGER PRIMARY KEY,
+            task_name VARCHAR(255),
+            duration_days INTEGER,
+            start_date DATE,
+            finish_date DATE
         )
     """)
-    conn.commit()
-    records = [(text,) for text in text_pages]
-    execute_values(cur, "INSERT INTO project_schedule_text (page_text) VALUES %s", records)
+    for task in tasks:
+        cur.execute("""
+            INSERT INTO project_tasks (task_id, task_name, duration_days, start_date, finish_date)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (task_id) DO NOTHING
+        """, (task['task_id'], task['task_name'], task['duration_days'], task['start_date'], task['finish_date']))
     conn.commit()
     cur.close()
     conn.close()
-    logger.info(f"Inserted {len(records)} pages of schedule text")
 
 @task
-def extract_regulatory_text_task(pdf_path):
-    logger.info(f"Extracting text from regulatory circular PDF {pdf_path}")
-    all_text = ""
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                all_text += text + "\n"
-    return all_text
-
-@task
-def load_regulatory_text_task(text):
-    logger.info("Loading regulatory circular text into PostgreSQL")
-    conn = psycopg2.connect(**POSTGRES_CONN_INFO)
+def extract_and_load_cost_items_task():
+    cost_items = extract_cost_items(PDF_COSTING_PATH)
+    conn = psycopg2.connect(**DB_CONFIG)
     cur = conn.cursor()
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS regulatory_circular_text (
-            id SERIAL PRIMARY KEY,
-            content TEXT
+        CREATE TABLE IF NOT EXISTS cost_items (
+            item_name VARCHAR(255),
+            quantity NUMERIC,
+            unit_price_yen NUMERIC,
+            total_cost_yen NUMERIC,
+            cost_type VARCHAR(50)
         )
     """)
-    conn.commit()
-    cur.execute("INSERT INTO regulatory_circular_text (content) VALUES (%s)", (text,))
+    for item in cost_items:
+        cur.execute("""
+            INSERT INTO cost_items (item_name, quantity, unit_price_yen, total_cost_yen, cost_type)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (item['item_name'], item['quantity'], item['unit_price_yen'], item['total_cost_yen'], item['cost_type']))
     conn.commit()
     cur.close()
     conn.close()
-    logger.info("Inserted regulatory circular text")
 
 @task
-def extract_flowchart_text_task(pdf_path):
-    logger.info(f"Extracting annotations from flowchart PDF {pdf_path}")
-    annotations = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for i, page in enumerate(pdf.pages):
-            text = page.extract_text()
-            if text:
-                annotations.append((i + 1, text))
-    return annotations
-
-@task
-def load_flowchart_annotations_task(annotations):
-    logger.info("Loading flowchart annotations into PostgreSQL")
-    conn = psycopg2.connect(**POSTGRES_CONN_INFO)
+def extract_and_load_regulatory_rules_task():
+    rules = extract_regulatory_rules(PDF_REGULATORY_PATH)
+    conn = psycopg2.connect(**DB_CONFIG)
     cur = conn.cursor()
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS flowchart_annotations (
-            id SERIAL PRIMARY KEY,
-            page_number INT,
-            annotation TEXT
+        CREATE TABLE IF NOT EXISTS regulatory_rules (
+            rule_id VARCHAR(50) PRIMARY KEY,
+            rule_summary TEXT,
+            measurement_basis VARCHAR(255)
         )
     """)
-    conn.commit()
-    records = [(page_num, annotation) for page_num, annotation in annotations]
-    execute_values(cur, "INSERT INTO flowchart_annotations (page_number, annotation) VALUES %s", records)
+    for rule in rules:
+        cur.execute("""
+            INSERT INTO regulatory_rules (rule_id, rule_summary, measurement_basis)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (rule_id) DO NOTHING
+        """, (rule['rule_id'], rule['rule_summary'], rule['measurement_basis']))
     conn.commit()
     cur.close()
     conn.close()
-    logger.info(f"Inserted {len(records)} flowchart annotations")
 
 @task
-def extract_costing_tables_task(pdf_path):
-    logger.info(f"Extracting tables from costing PDF {pdf_path}")
-    tables = camelot.read_pdf(pdf_path, flavor='stream', pages='all')
-    logger.info(f"Extracted {len(tables)} tables")
-    return [table.df for table in tables]
+def semantic_index_task():
+    semantic_embed_pdf(PDF_SCHEDULE_PATH, "project_schedule")
+    semantic_embed_pdf(PDF_COSTING_PATH, "planning_costing")
+    semantic_embed_pdf(PDF_REGULATORY_PATH, "regulatory_rules")
+    semantic_embed_pdf(PDF_FLOWCHART_PATH, "flowchart_annotations")
 
-@task
-def transform_and_load_costing_data_task(tables):
-    logger.info("Transforming and loading costing data")
-    create_tables()  # Creates tables if not exist
-    for table in tables:
-        cost_items = transform_table_to_cost_items(table)
-        load_cost_items_to_db(cost_items)
-    logger.info("Costing data loaded successfully")
-
-@flow(name="Complete Data Engineering Pipeline")
+@flow
 def data_pipeline():
-    # Schedule extraction/load
-    schedule_text = extract_schedule_text_task(PDF_SCHEDULE_PATH)
-    load_schedule_text_task(schedule_text)
-    
-    # Regulatory circular extraction/load
-    regulatory_text = extract_regulatory_text_task(PDF_REGULATORY_PATH)
-    load_regulatory_text_task(regulatory_text)
-    
-    # Flowchart extraction/load
-    flowchart_annotations = extract_flowchart_text_task(PDF_FLOWCHART_PATH)
-    load_flowchart_annotations_task(flowchart_annotations)
-
-    # Construction costing extraction/load
-    costing_tables = extract_costing_tables_task(PDF_COSTING_PATH)
-    transform_and_load_costing_data_task(costing_tables)
-
-    logger.info("All documents processed successfully.")
+    extract_and_load_schedule_task()
+    extract_and_load_cost_items_task()
+    extract_and_load_regulatory_rules_task()
+    semantic_index_task()
 
 if __name__ == "__main__":
     data_pipeline()
